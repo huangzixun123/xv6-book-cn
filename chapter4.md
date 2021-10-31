@@ -23,3 +23,11 @@ trap代码保存用户的寄存器到内核代码可以访问到的进程trap fr
 指针遇到两个挑战。第一，用户程序可能有bug或者是恶意性的，可能会传给内核一些无效的指针或欺骗内核访问内核空间而不是用户空间的指针。
 第二，xv6内核页表映射跟用户页表映射不一样，所以内核不能用来自用户地址所提供的普通指令来读或存。
 
+  内核实现了用户提供的地址中安全的传输数据的功能。fetchstr就是一个例子(kernel/syscall.c:25)。文件系统来调用例如exec使用
+fetchstr来获取用户空间传过来的文件名参数。fetchstr调用copyinstr来做最重要的工作。
+
+  copyinstr(kernel/vm.c:398)从用户页表pagetable的虚拟地址srcva最多复制max字节数据到dst中。因为pagetable不是当前的页表，
+copyinstr用walkaddr(walk)查找页表中的srcva，产生(yielding)物理地址pa0。内核会映射RAM物理地址到对应的内核虚拟地址，所以
+copyinstr可以从pa0直接复制字符串到dst。walkaddr(kernel/vm.c:104)会检查用户提供的虚拟地址在不在用户进程的地址空间中，所以
+程序无法欺骗内核读或写内存。一个相似的函数，copyout，从内核复制数据到用户提供的地址中。
+
