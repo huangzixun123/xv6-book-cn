@@ -48,3 +48,53 @@ KERNBASE=0x80000000在虚拟地址空间和物理内存。直接映射简化了�
 
   内核使用PTE_R和PTE_X权限映射trampoline页和内核文本。内核会从这些页读和执行指令。内核用PTE_R和PTE_W权限映射其他页，目的是为
 了它可以读或者写那些内存。保护页的映射是无效的。
+
+## 3.3 Code:创造地址空间
+
+  xv6大多数管理地址空间和页表的代码在vm.c(kernel/vm.c)。其中的中心数据结构是pagetable_t，它是一个指针指向RISC-V根页表页；
+pagetable_t可能是内核页，也可能是进程页表之一。重要函数是walk，它会找虚拟地址的PTE，和mappages，它会给新的映射加上PTE。以
+kvm开始的函数用来管理内核页表；以uvm开头的函数管理用户页表；其他函数用来管理两者。copyout和copyin复制数据到用户虚拟地址或从
+用户虚拟地址中复制数据，复制来的数据用来做系统调用的参数；他们全在vm.c中因为他们需要清楚的翻译那些地址为了找到对应的物理内存。
+
+  在启动的早期，main调用kvminit(kernel/vm.c:54)，通过使用kvmmake(kernel.vm.c:20)创建出内核页表。这个调用来发生在RISC-V
+中xv6使能分页机制(enable paging)前面，因此虚拟地址与物理地址直接关联。kvmmake首先分配一页物理页让存储根页表页。然后调用
+kvmmap安装内核需要的翻译机制。这个翻译机制包括内核指令，数据，物理内存直到PHYSTOP，和内存实际是设备的范围。Proc_mapstacks
+(kernel/proc.c:33)分配给每一个进程一个内核栈。它调用kvmmap映射每一个栈到KSTACK生成的虚拟地址上，这会流出一个空间给无效的栈
+保护页。
+
+  kvmmap(kernel/vm.c:12)调用mappages(kernel/vm.c:138)，它会安装映射到从虚拟地址范围到相应物理内存范围的页表上。对于在页区
+间范围内的每一个虚拟地址它都会独立的做这件事。对于每一个被映射的虚拟地址，mappages调用call来找到对应地址的PTE地址。然后它初始化
+PTE来存储相应的PPN，相应的权限(PTE_W,PTE_X或PTE_R)和PTE_V来标志PTE有效(kernel/vm.c:153)。
+
+  walk(kernel/vm.c:81)通过假装查找虚拟地址的PTE来模仿(mimics)RISC-V分页硬件(图3.2)。walk每次当时的3级页表下降9位。每次它
+用虚拟地址的9位地址来查找要么是下一层页表或最后一页(kernel/vm.c:87)。如果PTE无效，即所需的那一页还没有被分配；如果alloc参数被
+设置了，walk分配一个新的页表然后把它的物理地址放在PTE中。它返回树中低层次PTE的地址。(kernel/v,.c:97)
+
+  上面的代码依赖于被直接映射到内核虚拟地址空间的物理内存。例如，当walk下降到页表的下一层时，它会从下一层页表的PTE中拿出物理地址，
+然后使用那地址作为虚拟地址来拿到下一层的PTE(kernel/vm.c:87)。
+
+  main调用kvminithart(kernel/vm.c:62)来安装内核页表。它将根页表页的物理地址到寄存器satp。之后，CPU将会通过内核页表翻译地
+址。既然内核使用直接映射，下一条指令的地址将会映射到正确的物理内存地址。
+
+  每一个RISC-V CPU会缓存PTE到TLB中。当xv6改变页表时，它必须告诉CPU使对应的TLB条目无效
+(invalidate corresponding cached TLB entries)。如果不这样的话，那么在稍后的某一刻，TLB可能会使用老的缓存映射，指向物理页
+同时意味着也被分配给其他进程，结果，进程可能会乱写(scribble)其他进程内存。RISC-V有sfence.vma指令来刷新当前CPU的TLB。当重新加
+载satp寄存器后，xv6执行kvminithart中的sfence.vma，然后在返回用户空间之前，tramploine中的代码切换回用户页表(kernel/
+trampoline.S:79)。
+
+  为了避免刷新所有的TLB，RISC-V CPU可能支持地址空间标识符(ASIDs，address space identifiers)。内核可以只刷新特定地址空间的
+TLB。
+
+## 3.4 物理内存分配
+
+  内核必须在运行时为页表、用户内存、内核栈和管道缓存分配和释放物理内存。
+
+  xv6使用在kernel的结束处和PHYSTOP之间的物理内存作为运行时的分配。每一次分配或释放4096字节大小的页。通过将页面串在一起，来跟踪
+哪一个页面被释放。分配包括从链表删除页面；释放页面包括将页面串到链表中。
+
+## 3.5 Code: 物理内存分配
+
+  分配器的代码位于kalloc.c(kernel/kalloc.c:1)。分配器的数据结构是free链表，即可以用来分配的物理内存。每一个空闲链表的元素是
+struct run(kernel/kalloc.c:17)。分配器从哪里获取内存来放置数据结构呢？它将每一个空闲页run结构存储在它自己的空闲页中，因为没
+有其他需要存储的。空闲链表由spin lock保护。链表和锁被包装在一个结构体内用来保证保护结构体里面的字段。在现在，暂时忽略错和调用
+acquire和release；第六章将会介绍。
